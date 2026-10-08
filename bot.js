@@ -5,23 +5,14 @@ const {
   joinVoiceChannel,
   createAudioPlayer,
   createAudioResource,
-  StreamType,
   AudioPlayerStatus,
-  VoiceConnectionStatus
+  VoiceConnectionStatus,
+  NoSubscriberBehavior,
 } = require('@discordjs/voice');
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
 
-// Cari ffmpeg dari ffmpeg-static atau system
-let ffmpegPath;
-try {
-  ffmpegPath = require('ffmpeg-static');
-  console.log('Using ffmpeg-static:', ffmpegPath);
-} catch {
-  ffmpegPath = 'ffmpeg';
-  console.log('Using system ffmpeg');
-}
+const ffmpegPath = require('ffmpeg-static');
 process.env.FFMPEG_PATH = ffmpegPath;
 
 const client = new Client({
@@ -39,7 +30,6 @@ function getMusicFiles() {
   const musicDir = path.join(__dirname, 'music');
   if (!fs.existsSync(musicDir)) {
     fs.mkdirSync(musicDir);
-    console.log('Folder music/ dibuat');
     return [];
   }
   const files = fs.readdirSync(musicDir)
@@ -52,23 +42,35 @@ function getMusicFiles() {
 function playNext() {
   const files = getMusicFiles();
   if (files.length === 0) {
-    console.log('Tidak ada file musik di folder music/');
+    console.log('Tidak ada file musik');
     return;
   }
-
   if (currentIndex >= files.length) currentIndex = 0;
 
   const file = files[currentIndex];
   console.log(`Playing (${currentIndex + 1}/${files.length}): ${path.basename(file)}`);
 
   try {
-    const resource = createAudioResource(file, {
-      inputType: StreamType.Arbitrary,
+    // Pakai ffmpeg spawn langsung untuk decode MP3 ke PCM
+    const { spawn } = require('child_process');
+    const ffmpeg = spawn(ffmpegPath, [
+      '-i', file,
+      '-analyzeduration', '0',
+      '-loglevel', '0',
+      '-f', 's16le',
+      '-ar', '48000',
+      '-ac', '2',
+      'pipe:1'
+    ]);
+
+    const resource = createAudioResource(ffmpeg.stdout, {
+      inputType: require('@discordjs/voice').StreamType.Raw,
     });
+
     player.play(resource);
     currentIndex++;
   } catch (err) {
-    console.error('Error creating resource:', err.message);
+    console.error('Error playing:', err.message);
     currentIndex++;
     setTimeout(() => playNext(), 3000);
   }
@@ -90,7 +92,12 @@ async function joinChannel() {
       selfMute: false,
     });
 
-    player = createAudioPlayer();
+    player = createAudioPlayer({
+      behaviors: {
+        noSubscriber: NoSubscriberBehavior.Play,
+      },
+    });
+
     connection.subscribe(player);
 
     player.on(AudioPlayerStatus.Idle, () => {
@@ -123,7 +130,7 @@ client.on('voiceStateUpdate', (oldState, newState) => {
     oldState.channelId &&
     !newState.channelId
   ) {
-    console.log('Bot di-kick, reconnecting dalam 5 detik...');
+    console.log('Bot di-kick, reconnecting...');
     setTimeout(() => joinChannel(), 5000);
   }
 });
