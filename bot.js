@@ -5,11 +5,24 @@ const {
   joinVoiceChannel,
   createAudioPlayer,
   createAudioResource,
+  StreamType,
   AudioPlayerStatus,
   VoiceConnectionStatus
 } = require('@discordjs/voice');
 const fs = require('fs');
 const path = require('path');
+const { execSync } = require('child_process');
+
+// Cari ffmpeg dari ffmpeg-static atau system
+let ffmpegPath;
+try {
+  ffmpegPath = require('ffmpeg-static');
+  console.log('Using ffmpeg-static:', ffmpegPath);
+} catch {
+  ffmpegPath = 'ffmpeg';
+  console.log('Using system ffmpeg');
+}
+process.env.FFMPEG_PATH = ffmpegPath;
 
 const client = new Client({
   intents: [
@@ -26,29 +39,39 @@ function getMusicFiles() {
   const musicDir = path.join(__dirname, 'music');
   if (!fs.existsSync(musicDir)) {
     fs.mkdirSync(musicDir);
-    console.log('Folder music/ dibuat, masukkan file MP3 ke sana');
+    console.log('Folder music/ dibuat');
     return [];
   }
-  return fs.readdirSync(musicDir)
+  const files = fs.readdirSync(musicDir)
     .filter(f => f.endsWith('.mp3') || f.endsWith('.ogg'))
     .map(f => path.join(musicDir, f));
+  console.log(`Found ${files.length} music files`);
+  return files;
 }
 
 function playNext() {
   const files = getMusicFiles();
   if (files.length === 0) {
-    console.log('Tidak ada file musik');
+    console.log('Tidak ada file musik di folder music/');
     return;
   }
 
   if (currentIndex >= files.length) currentIndex = 0;
 
   const file = files[currentIndex];
-  console.log(`Playing: ${path.basename(file)}`);
+  console.log(`Playing (${currentIndex + 1}/${files.length}): ${path.basename(file)}`);
 
-  const resource = createAudioResource(file);
-  player.play(resource);
-  currentIndex++;
+  try {
+    const resource = createAudioResource(file, {
+      inputType: StreamType.Arbitrary,
+    });
+    player.play(resource);
+    currentIndex++;
+  } catch (err) {
+    console.error('Error creating resource:', err.message);
+    currentIndex++;
+    setTimeout(() => playNext(), 3000);
+  }
 }
 
 async function joinChannel() {
@@ -70,34 +93,30 @@ async function joinChannel() {
     player = createAudioPlayer();
     connection.subscribe(player);
 
-    // Auto play lagu berikutnya saat selesai
     player.on(AudioPlayerStatus.Idle, () => {
+      console.log('Track ended, playing next...');
       setTimeout(() => playNext(), 1000);
     });
 
-    // Auto retry kalau error
     player.on('error', (err) => {
       console.error('Player error:', err.message);
       setTimeout(() => playNext(), 3000);
     });
 
-    // Auto reconnect kalau disconnect
     connection.on(VoiceConnectionStatus.Disconnected, () => {
       console.log('Disconnected, reconnecting...');
       setTimeout(() => joinChannel(), 5000);
     });
 
-    // Langsung putar
     playNext();
     console.log(`Joined: ${channel.name}`);
 
   } catch (err) {
-    console.error('Error:', err);
+    console.error('Error joining channel:', err);
     setTimeout(() => joinChannel(), 10000);
   }
 }
 
-// Auto reconnect kalau di-kick
 client.on('voiceStateUpdate', (oldState, newState) => {
   if (
     oldState.member?.id === client.user.id &&
