@@ -7,6 +7,7 @@ const {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  Events,
 } = require('discord.js');
 const {
   joinVoiceChannel,
@@ -16,6 +17,7 @@ const {
   VoiceConnectionStatus,
   NoSubscriberBehavior,
   StreamType,
+  entersState,
 } = require('@discordjs/voice');
 const { spawn } = require('child_process');
 const fs = require('fs');
@@ -285,12 +287,24 @@ async function joinVoice(targetChannel) {
       return null;
     }
 
+    // Jika connection sudah ada di channel yang sama dan aktif, gunakan yang ada (cegah socket reset)
+    if (connection && connection.state.status !== VoiceConnectionStatus.Destroyed) {
+      if (connection.joinConfig.channelId === voiceChannel.id) {
+        return connection;
+      }
+    }
+
     connection = joinVoiceChannel({
       channelId: voiceChannel.id,
       guildId: voiceChannel.guild.id,
       adapterCreator: voiceChannel.guild.voiceAdapterCreator,
       selfDeaf: false,
       selfMute: false,
+    });
+
+    connection.on('error', err => {
+      if (err.message?.includes('Cannot perform IP discovery')) return;
+      console.warn('Voice connection warning:', err.message);
     });
 
     if (!player) {
@@ -302,9 +316,19 @@ async function joinVoice(targetChannel) {
 
     connection.subscribe(player);
 
-    connection.on(VoiceConnectionStatus.Disconnected, () => {
-      console.log('Voice disconnected, mencoba reconnect dalam 5 detik...');
-      setTimeout(() => joinVoice(voiceChannel), 5000);
+    connection.on(VoiceConnectionStatus.Disconnected, async () => {
+      try {
+        await Promise.race([
+          entersState(connection, VoiceConnectionStatus.Signalling, 5000),
+          entersState(connection, VoiceConnectionStatus.Connecting, 5000),
+        ]);
+        // Reconnecting secara internal oleh Discord Voice server
+      } catch (e) {
+        console.log('Voice terputus, mencoba reconnect dalam 5 detik...');
+        try { connection.destroy(); } catch (_) {}
+        connection = null;
+        setTimeout(() => joinVoice(voiceChannel), 5000);
+      }
     });
 
     console.log(`Berhasil join Voice Channel: ${voiceChannel.name}`);
@@ -402,7 +426,7 @@ client.on('voiceStateUpdate', (oldState, newState) => {
 });
 
 // Bot Siap
-client.once('ready', async () => {
+client.once(Events.ClientReady, async () => {
   console.log(`=================================`);
   console.log(`Bot siap: ${client.user.tag}`);
   console.log(`Target Channel ID: ${TEXT_CHANNEL_ID}`);
@@ -418,6 +442,12 @@ client.once('ready', async () => {
 });
 
 client.on('error', err => console.error('Client error:', err));
-process.on('unhandledRejection', err => console.error('Unhandled Rejection:', err));
+process.on('unhandledRejection', err => {
+  if (err?.message?.includes('Cannot perform IP discovery')) {
+    // Normal handshaking socket retry di container, abaikan agar log bersih
+    return;
+  }
+  console.error('Unhandled Rejection:', err);
+});
 
 client.login(process.env.BOT_TOKEN);
