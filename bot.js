@@ -162,11 +162,14 @@ function playTrack(index) {
 
   currentProcess = spawn(ffmpegPath, [
     '-i', filePath,
+    '-analyzeduration', '0',
     '-loglevel', 'error',
     '-c:a', 'libopus',
     '-b:a', '128k',
     '-ar', '48000',
     '-ac', '2',
+    '-page_duration', '20000', // 20ms per page agar selaras dengan Discord Opus frame
+    '-flush_packets', '1',     // Flush packet langsung ke stream tanpa delay buffering
     '-f', 'ogg',
     'pipe:1',
   ]);
