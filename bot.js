@@ -32,17 +32,17 @@ const PLAYLIST = [
   {
     name: 'DJ Set 1',
     detail: 'Part 1',
-    file: 'DJ_part1.mp3',
+    file: 'DJ_part1.ogg',
   },
   {
     name: 'DJ Set 2',
     detail: 'Part 2',
-    file: 'DJ_part2.mp3',
+    file: 'DJ_part2.ogg',
   },
   {
     name: 'DJ Set 3',
     detail: 'Part 3',
-    file: 'DJ_part3.mp3',
+    file: 'DJ_part3.ogg',
   },
 ];
 
@@ -59,6 +59,7 @@ let player = null;
 let currentIndex = 0;
 let isPlaying = false;
 let currentProcess = null;
+let currentReadStream = null;
 let controlMessage = null;
 
 // Fungsi pembuat Embed & Buttons
@@ -133,8 +134,14 @@ async function updateUI() {
   }
 }
 
-// Hentikan proses ffmpeg yang sedang aktif
+// Hentikan proses stream / ffmpeg yang sedang aktif
 function stopCurrentProcess() {
+  if (currentReadStream) {
+    try {
+      currentReadStream.destroy();
+    } catch (e) {}
+    currentReadStream = null;
+  }
   if (currentProcess) {
     try {
       currentProcess.kill('SIGKILL');
@@ -149,37 +156,55 @@ function playTrack(index) {
   currentIndex = index;
 
   const track = PLAYLIST[currentIndex];
-  const filePath = path.join(__dirname, 'music', track.file);
+  let filePath = path.join(__dirname, 'music', track.file);
 
+  // Cek fallback jika file .ogg tidak ada tapi ada file .mp3
   if (!fs.existsSync(filePath)) {
-    console.error(`File musik tidak ditemukan: ${filePath}`);
-    return;
+    const fallbackMp3 = path.join(__dirname, 'music', track.file.replace(/\.ogg$/, '.mp3'));
+    if (fs.existsSync(fallbackMp3)) {
+      filePath = fallbackMp3;
+    } else {
+      console.error(`File musik tidak ditemukan: ${filePath}`);
+      return;
+    }
   }
 
   stopCurrentProcess();
 
-  console.log(`Memutar: ${track.name} (${track.file})`);
+  console.log(`Memutar: ${track.name} (${path.basename(filePath)})`);
 
-  currentProcess = spawn(ffmpegPath, [
-    '-i', filePath,
-    '-analyzeduration', '0',
-    '-loglevel', 'error',
-    '-c:a', 'libopus',
-    '-b:a', '128k',
-    '-ar', '48000',
-    '-ac', '2',
-    '-page_duration', '20000', // 20ms per page agar selaras dengan Discord Opus frame
-    '-flush_packets', '1',     // Flush packet langsung ke stream tanpa delay buffering
-    '-f', 'ogg',
-    'pipe:1',
-  ]);
+  let resource;
 
-  currentProcess.stderr.on('data', d => console.error('ffmpeg error:', d.toString()));
-  currentProcess.on('error', err => console.error('ffmpeg spawn error:', err));
+  // JIKA SUDAH FORMAT OGG OPUS: LANGSUNG STREAM STREAM DARI FILE TANPA FFMPEG (CPU ~0%)
+  if (filePath.endsWith('.ogg')) {
+    currentReadStream = fs.createReadStream(filePath);
+    resource = createAudioResource(currentReadStream, {
+      inputType: StreamType.OggOpus,
+    });
+  } else {
+    // Fallback jika memutar file MP3
+    currentProcess = spawn(ffmpegPath, [
+      '-i', filePath,
+      '-analyzeduration', '0',
+      '-loglevel', 'error',
+      '-c:a', 'libopus',
+      '-b:a', '96k',
+      '-ar', '48000',
+      '-ac', '2',
+      '-page_duration', '20000',
+      '-flush_packets', '1',
+      '-threads', '1',
+      '-f', 'ogg',
+      'pipe:1',
+    ]);
 
-  const resource = createAudioResource(currentProcess.stdout, {
-    inputType: StreamType.OggOpus,
-  });
+    currentProcess.stderr.on('data', d => console.error('ffmpeg error:', d.toString()));
+    currentProcess.on('error', err => console.error('ffmpeg spawn error:', err));
+
+    resource = createAudioResource(currentProcess.stdout, {
+      inputType: StreamType.OggOpus,
+    });
+  }
 
   resource.playStream.on('error', err => console.error('Stream error:', err));
 
