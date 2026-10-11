@@ -8,6 +8,7 @@ const {
   AudioPlayerStatus,
   VoiceConnectionStatus,
   NoSubscriberBehavior,
+  StreamType,
 } = require('@discordjs/voice');
 const { spawn } = require('child_process');
 const fs = require('fs');
@@ -43,18 +44,23 @@ function playNext() {
 
   const ffmpeg = spawn(ffmpegPath, [
     '-i', file,
-    '-analyzeduration', '0',
     '-loglevel', 'error',
-    '-f', 's16le',
+    '-c:a', 'libopus',
+    '-b:a', '128k',
     '-ar', '48000',
     '-ac', '2',
+    '-f', 'ogg',
     'pipe:1'
   ]);
 
   ffmpeg.stderr.on('data', d => console.error('ffmpeg:', d.toString()));
+  ffmpeg.on('error', err => console.error('ffmpeg spawn error:', err));
 
-  const { StreamType } = require('@discordjs/voice');
-  const resource = createAudioResource(ffmpeg.stdout, { inputType: StreamType.Raw });
+  const resource = createAudioResource(ffmpeg.stdout, {
+    inputType: StreamType.OggOpus,
+  });
+
+  resource.playStream.on('error', err => console.error('Stream error:', err));
   player.play(resource);
 }
 
